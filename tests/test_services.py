@@ -199,28 +199,64 @@ class AccountingServiceTests(unittest.TestCase):
             app.budget_percent.set.call_args.args[0],
             "恭喜本月赚了 ￥1,500.00！",
         )
-        self.assertEqual(app.budget_progress.configure.call_args.kwargs["value"], 0)
-        self.assertEqual(
-            app.budget_progress.configure.call_args.kwargs["style"],
-            "Income.Horizontal.TProgressbar",
-        )
+        app.budget_progress.pack_forget.assert_called_once()
         app.budget_status.set.reset_mock()
         app.budget_percent.set.reset_mock()
         app.budget_progress.configure.reset_mock()
 
         self.service.save_transaction(
-            "2026-07-04", TransactionType.EXPENSE, "交通", "1750"
+            "2026-07-04", TransactionType.EXPENSE, "交通", "2000"
         )
         AccountingApp.refresh_budget(app)
 
-        self.assertIn("净消费：￥250.00", app.budget_status.set.call_args.args[0])
-        self.assertEqual(app.budget_percent.set.call_args.args[0], "25.0%")
-        self.assertEqual(app.budget_progress.configure.call_args.kwargs["value"], 25)
+        self.assertIn("净消费：￥500.00", app.budget_status.set.call_args.args[0])
+        self.assertEqual(app.budget_percent.set.call_args.args[0], "50.0%")
+        self.assertEqual(app.budget_progress.configure.call_args.kwargs["value"], 50)
+        self.assertEqual(
+            app.budget_progress.configure.call_args.kwargs["style"],
+            "Income.Horizontal.TProgressbar",
+        )
+        app.budget_progress.configure.reset_mock()
+        app.budget_details.set.reset_mock()
+        app.budget_details_label.configure.reset_mock()
+
+        self.service.save_transaction(
+            "2026-07-05", TransactionType.EXPENSE, "交通", "1.00"
+        )
+        AccountingApp.refresh_budget(app)
+
+        self.assertEqual(app.budget_percent.set.call_args.args[0], "50.1%")
         self.assertEqual(
             app.budget_progress.configure.call_args.kwargs["style"],
             "Expense.Horizontal.TProgressbar",
         )
-        self.assertIn("预算剩余 ￥750.00", app.budget_details.set.call_args.args[0])
+        self.assertIn(
+            "预算剩余不多：￥499.00",
+            app.budget_details.set.call_args.args[0],
+        )
+        self.assertEqual(
+            app.budget_details_label.configure.call_args.kwargs["foreground"],
+            "#e05b5b",
+        )
+
+        self.service.save_transaction(
+            "2026-07-06", TransactionType.EXPENSE, "交通", "499.00"
+        )
+        AccountingApp.refresh_budget(app)
+        self.assertEqual(app.budget_percent.set.call_args.args[0], "100.0%")
+        self.assertIn(
+            "预算剩余不多：￥0.00",
+            app.budget_details.set.call_args.args[0],
+        )
+        self.service.save_transaction(
+            "2026-07-07", TransactionType.EXPENSE, "交通", "0.01"
+        )
+        AccountingApp.refresh_budget(app)
+        self.assertIn("已超预算 ￥0.01", app.budget_details.set.call_args.args[0])
+        self.assertEqual(
+            app.budget_details_label.configure.call_args.kwargs["foreground"],
+            "#e05b5b",
+        )
 
     def _budget_display_test_app(self) -> SimpleNamespace:
         return SimpleNamespace(
@@ -230,6 +266,7 @@ class AccountingServiceTests(unittest.TestCase):
             budget_percent=Mock(),
             budget_progress=Mock(),
             budget_details=Mock(),
+            budget_details_label=Mock(),
             budget_percent_label=Mock(),
         )
 
