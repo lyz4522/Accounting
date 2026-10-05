@@ -9,6 +9,20 @@ class TransactionType(str, Enum):
     EXPENSE = "支出"
 
 
+DEFAULT_INCOME_CATEGORIES = ("工资", "奖金", "理财", "兼职", "其他收入")
+DEFAULT_EXPENSE_CATEGORIES = (
+    "餐饮",
+    "交通",
+    "住房",
+    "购物",
+    "医疗",
+    "娱乐",
+    "教育",
+    "通讯",
+    "其他支出",
+)
+
+
 @dataclass(frozen=True)
 class Transaction:
     date: str
@@ -41,4 +55,3 @@ class MonthlyTrend:
     month: str
     income_cents: int
     expense_cents: int
-

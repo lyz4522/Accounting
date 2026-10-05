@@ -6,24 +6,16 @@ from decimal import Decimal, InvalidOperation
 from accounting.database import AccountingRepository
 from accounting.models import (
     CategoryTotal,
+    DEFAULT_EXPENSE_CATEGORIES,
+    DEFAULT_INCOME_CATEGORIES,
     MonthlyTrend,
     PeriodSummary,
     Transaction,
     TransactionType,
 )
 
-INCOME_CATEGORIES = ("工资", "奖金", "理财", "兼职", "其他收入")
-EXPENSE_CATEGORIES = (
-    "餐饮",
-    "交通",
-    "住房",
-    "购物",
-    "医疗",
-    "娱乐",
-    "教育",
-    "通讯",
-    "其他支出",
-)
+INCOME_CATEGORIES = DEFAULT_INCOME_CATEGORIES
+EXPENSE_CATEGORIES = DEFAULT_EXPENSE_CATEGORIES
 
 
 class AccountingService:
@@ -57,15 +49,9 @@ class AccountingService:
             raise ValueError("月份格式无效，请使用 YYYY-MM。") from exc
         return parsed.strftime("%Y-%m")
 
-    @staticmethod
-    def _validate_category(transaction_type: TransactionType, category: str) -> str:
-        categories = (
-            INCOME_CATEGORIES
-            if transaction_type is TransactionType.INCOME
-            else EXPENSE_CATEGORIES
-        )
+    def _validate_category(self, transaction_type: TransactionType, category: str) -> str:
         normalized = category.strip()
-        if normalized not in categories:
+        if normalized not in self.repository.list_categories(transaction_type):
             raise ValueError("请选择与收支类型匹配的有效分类。")
         return normalized
 
@@ -80,13 +66,16 @@ class AccountingService:
     ) -> Transaction:
         if not isinstance(transaction_type, TransactionType):
             raise ValueError("收支类型无效。")
+        normalized_note = note.strip()
+        if len(normalized_note) > 100:
+            raise ValueError("备注最多只能输入 100 个字符。")
         transaction = Transaction(
             transaction_id=transaction_id,
             date=self.normalize_date(transaction_date),
             transaction_type=transaction_type,
             category=self._validate_category(transaction_type, category),
             amount_cents=self.parse_amount(amount),
-            note=note.strip(),
+            note=normalized_note,
         )
         if transaction_id is None:
             return self.repository.add_transaction(transaction)
@@ -168,12 +157,43 @@ class AccountingService:
         start_date: str | None = None,
         end_date: str | None = None,
         category: str | None = None,
+        transaction_type: TransactionType | None = None,
     ) -> list[Transaction]:
         start = self.normalize_date(start_date) if start_date else None
         end = self.normalize_date(end_date) if end_date else None
         if start and end and start > end:
             raise ValueError("开始日期不能晚于结束日期。")
-        return self.repository.list_transactions(start, end, category)
+        if category and transaction_type is None:
+            raise ValueError("选择分类筛选前，请先选择收支类型。")
+        if category and category not in self.repository.list_categories(transaction_type):
+            raise ValueError("所选分类不属于当前收支类型。")
+        return self.repository.list_transactions(start, end, category, transaction_type)
+
+    def categories(self, transaction_type: TransactionType) -> list[str]:
+        if not isinstance(transaction_type, TransactionType):
+            raise ValueError("收支类型无效。")
+        return self.repository.list_categories(transaction_type)
+
+    def add_category(self, transaction_type: TransactionType, name: str) -> str:
+        if not isinstance(transaction_type, TransactionType):
+            raise ValueError("收支类型无效。")
+        normalized = name.strip()
+        if not normalized or len(normalized) > 20:
+            raise ValueError("分类名称为必填项，最多只能输入 20 个字符。")
+        if normalized in self.repository.list_categories(transaction_type):
+            raise ValueError("该收支类型下已存在同名分类。")
+        if not self.repository.add_category(transaction_type, normalized):
+            raise ValueError("该收支类型下已存在同名分类。")
+        return normalized
+
+    def delete_category(self, transaction_type: TransactionType, name: str) -> None:
+        if not isinstance(transaction_type, TransactionType):
+            raise ValueError("收支类型无效。")
+        result = self.repository.delete_category(transaction_type, name)
+        if result == "in_use":
+            raise ValueError("该分类已有收支记录，请先修改或删除相关记录后再删除分类。")
+        if result != "deleted":
+            raise ValueError("内置分类或不存在的分类不能删除。")
 
     def category_totals(self, month: str) -> list[CategoryTotal]:
         return self.repository.get_category_totals(self.normalize_month(month))

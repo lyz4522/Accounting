@@ -10,6 +10,8 @@ from accounting.models import (
     MonthlyTrend,
     Transaction,
     TransactionType,
+    DEFAULT_EXPENSE_CATEGORIES,
+    DEFAULT_INCOME_CATEGORIES,
 )
 
 
@@ -63,6 +65,33 @@ class AccountingRepository:
                     amount_cents INTEGER NOT NULL CHECK (amount_cents > 0)
                 )
                 """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS categories (
+                    transaction_type TEXT NOT NULL
+                        CHECK (transaction_type IN ('收入', '支出')),
+                    name TEXT NOT NULL,
+                    is_builtin INTEGER NOT NULL DEFAULT 0
+                        CHECK (is_builtin IN (0, 1)),
+                    PRIMARY KEY (transaction_type, name)
+                )
+                """
+            )
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO categories
+                    (transaction_type, name, is_builtin)
+                VALUES (?, ?, 1)
+                """,
+                [
+                    (TransactionType.INCOME.value, name)
+                    for name in DEFAULT_INCOME_CATEGORIES
+                ]
+                + [
+                    (TransactionType.EXPENSE.value, name)
+                    for name in DEFAULT_EXPENSE_CATEGORIES
+                ],
             )
 
     @staticmethod
@@ -136,6 +165,7 @@ class AccountingRepository:
         start_date: str | None = None,
         end_date: str | None = None,
         category: str | None = None,
+        transaction_type: TransactionType | None = None,
     ) -> list[Transaction]:
         conditions: list[str] = []
         parameters: list[str] = []
@@ -148,6 +178,9 @@ class AccountingRepository:
         if category:
             conditions.append("category = ?")
             parameters.append(category)
+        if transaction_type is not None:
+            conditions.append("transaction_type = ?")
+            parameters.append(transaction_type.value)
         where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._connection() as connection:
             rows = connection.execute(
@@ -219,6 +252,50 @@ class AccountingRepository:
                 "SELECT amount_cents FROM monthly_budgets WHERE month = ?", (month,)
             ).fetchone()
         return row["amount_cents"] if row else None
+
+    def list_categories(self, transaction_type: TransactionType) -> list[str]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT name FROM categories
+                WHERE transaction_type = ?
+                ORDER BY is_builtin DESC, rowid
+                """,
+                (transaction_type.value,),
+            ).fetchall()
+        return [row["name"] for row in rows]
+
+    def add_category(self, transaction_type: TransactionType, name: str) -> bool:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO categories
+                    (transaction_type, name, is_builtin)
+                VALUES (?, ?, 0)
+                """,
+                (transaction_type.value, name),
+            )
+        return cursor.rowcount == 1
+
+    def delete_category(self, transaction_type: TransactionType, name: str) -> str:
+        with self._connection() as connection:
+            in_use = connection.execute(
+                """
+                SELECT 1 FROM transactions
+                WHERE transaction_type = ? AND category = ? LIMIT 1
+                """,
+                (transaction_type.value, name),
+            ).fetchone()
+            if in_use:
+                return "in_use"
+            cursor = connection.execute(
+                """
+                DELETE FROM categories
+                WHERE transaction_type = ? AND name = ? AND is_builtin = 0
+                """,
+                (transaction_type.value, name),
+            )
+        return "deleted" if cursor.rowcount == 1 else "unavailable"
 
     def set_budget(self, month: str, amount_cents: int) -> None:
         with self._connection() as connection:

@@ -1,10 +1,12 @@
 """Unit and persistence tests for accounting rules."""
 
+from contextlib import closing
 from tempfile import TemporaryDirectory
+import sqlite3
 import unittest
 
 from accounting.database import AccountingRepository
-from accounting.models import TransactionType
+from accounting.models import DEFAULT_EXPENSE_CATEGORIES, TransactionType
 from accounting.services import AccountingService
 
 
@@ -38,7 +40,10 @@ class AccountingServiceTests(unittest.TestCase):
             first.transaction_id,
         )
         filtered = self.service.list_transactions(
-            "2026-03-02", "2026-03-03", "交通"
+            "2026-03-02",
+            "2026-03-03",
+            "交通",
+            TransactionType.EXPENSE,
         )
         self.assertEqual([entry.transaction_id for entry in filtered], [first.transaction_id])
         self.assertEqual(filtered[0].amount_cents, 1200)
@@ -96,6 +101,83 @@ class AccountingServiceTests(unittest.TestCase):
             )
         with self.assertRaises(ValueError):
             self.service.set_budget("2026-05", "0")
+        with self.assertRaises(ValueError):
+            self.service.save_transaction(
+                "2026-05-01",
+                TransactionType.EXPENSE,
+                "餐饮",
+                "1",
+                "备注" * 51,
+            )
+
+    def test_custom_categories_are_type_scoped_and_protect_existing_records(self) -> None:
+        self.assertEqual(
+            self.service.add_category(TransactionType.EXPENSE, "宠物"),
+            "宠物",
+        )
+        with self.assertRaisesRegex(ValueError, "同名"):
+            self.service.add_category(TransactionType.EXPENSE, "宠物")
+
+        saved = self.service.save_transaction(
+            "2026-05-01", TransactionType.EXPENSE, "宠物", "28"
+        )
+        filtered = self.service.list_transactions(
+            category="宠物", transaction_type=TransactionType.EXPENSE
+        )
+        self.assertEqual([item.transaction_id for item in filtered], [saved.transaction_id])
+        with self.assertRaisesRegex(ValueError, "不属于当前收支类型"):
+            self.service.list_transactions(
+                category="宠物", transaction_type=TransactionType.INCOME
+            )
+        with self.assertRaisesRegex(ValueError, "先选择收支类型"):
+            self.service.list_transactions(category="宠物")
+        with self.assertRaisesRegex(ValueError, "已有收支记录"):
+            self.service.delete_category(TransactionType.EXPENSE, "宠物")
+
+        self.service.add_category(TransactionType.INCOME, "报销")
+        self.service.delete_category(TransactionType.INCOME, "报销")
+        self.assertNotIn("报销", self.service.categories(TransactionType.INCOME))
+        with self.assertRaisesRegex(ValueError, "内置分类"):
+            self.service.delete_category(TransactionType.EXPENSE, "餐饮")
+
+    def test_custom_category_name_validation(self) -> None:
+        for name in ("", " " * 2, "分类" * 11):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.service.add_category(TransactionType.EXPENSE, name)
+
+    def test_existing_database_is_migrated_without_losing_records(self) -> None:
+        database_path = f"{self.temporary_directory.name}/legacy.db"
+        with closing(sqlite3.connect(database_path)) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    CREATE TABLE transactions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        transaction_date TEXT NOT NULL,
+                        transaction_type TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        amount_cents INTEGER NOT NULL,
+                        note TEXT NOT NULL DEFAULT ''
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO transactions
+                        (transaction_date, transaction_type, category, amount_cents, note)
+                    VALUES ('2026-01-02', '支出', '餐饮', 1250, '旧记录')
+                    """
+                )
+
+        repository = AccountingRepository(database_path)
+        service = AccountingService(repository)
+        self.assertEqual(
+            service.categories(TransactionType.EXPENSE),
+            list(DEFAULT_EXPENSE_CATEGORIES),
+        )
+        old_records = service.list_transactions()
+        self.assertEqual(len(old_records), 1)
+        self.assertEqual(old_records[0].note, "旧记录")
 
     def test_monthly_charts_return_complete_months_and_totals(self) -> None:
         self.service.save_transaction(
