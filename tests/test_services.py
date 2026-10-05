@@ -4,10 +4,13 @@ from contextlib import closing
 from tempfile import TemporaryDirectory
 import sqlite3
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from accounting.database import AccountingRepository
 from accounting.models import DEFAULT_EXPENSE_CATEGORIES, TransactionType
 from accounting.services import AccountingService
+from accounting.gui import AccountingApp
 
 
 class AccountingServiceTests(unittest.TestCase):
@@ -178,6 +181,57 @@ class AccountingServiceTests(unittest.TestCase):
         old_records = service.list_transactions()
         self.assertEqual(len(old_records), 1)
         self.assertEqual(old_records[0].note, "旧记录")
+
+    def test_budget_display_distinguishes_net_income_and_spending(self) -> None:
+        self.service.set_budget("2026-07", "1000")
+        self.service.save_transaction(
+            "2026-07-02", TransactionType.INCOME, "工资", "2000"
+        )
+        self.service.save_transaction(
+            "2026-07-03", TransactionType.EXPENSE, "餐饮", "500"
+        )
+        app = self._budget_display_test_app()
+
+        AccountingApp.refresh_budget(app)
+
+        self.assertIn("净收入：￥1,500.00", app.budget_status.set.call_args.args[0])
+        self.assertEqual(
+            app.budget_percent.set.call_args.args[0],
+            "恭喜本月赚了 ￥1,500.00！",
+        )
+        self.assertEqual(app.budget_progress.configure.call_args.kwargs["value"], 0)
+        self.assertEqual(
+            app.budget_progress.configure.call_args.kwargs["style"],
+            "Income.Horizontal.TProgressbar",
+        )
+        app.budget_status.set.reset_mock()
+        app.budget_percent.set.reset_mock()
+        app.budget_progress.configure.reset_mock()
+
+        self.service.save_transaction(
+            "2026-07-04", TransactionType.EXPENSE, "交通", "1750"
+        )
+        AccountingApp.refresh_budget(app)
+
+        self.assertIn("净消费：￥250.00", app.budget_status.set.call_args.args[0])
+        self.assertEqual(app.budget_percent.set.call_args.args[0], "25.0%")
+        self.assertEqual(app.budget_progress.configure.call_args.kwargs["value"], 25)
+        self.assertEqual(
+            app.budget_progress.configure.call_args.kwargs["style"],
+            "Expense.Horizontal.TProgressbar",
+        )
+        self.assertIn("预算剩余 ￥750.00", app.budget_details.set.call_args.args[0])
+
+    def _budget_display_test_app(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            budget_month=SimpleNamespace(get_month=lambda: "2026-07"),
+            service=self.service,
+            budget_status=Mock(),
+            budget_percent=Mock(),
+            budget_progress=Mock(),
+            budget_details=Mock(),
+            budget_percent_label=Mock(),
+        )
 
     def test_monthly_charts_return_complete_months_and_totals(self) -> None:
         self.service.save_transaction(

@@ -145,6 +145,16 @@ class AccountingApp:
         style.configure("Section.TLabel", font=("Microsoft YaHei UI", 12, "bold"))
         style.configure("Metric.TLabel", font=("Microsoft YaHei UI", 16, "bold"))
         style.configure("Treeview", rowheight=29)
+        style.configure(
+            "Income.Horizontal.TProgressbar",
+            background="#15966b",
+            troughcolor="#dcefe8",
+        )
+        style.configure(
+            "Expense.Horizontal.TProgressbar",
+            background="#e05b5b",
+            troughcolor="#f8e1e1",
+        )
 
     def _build_interface(self) -> None:
         container = ttk.Frame(self.root, padding=(18, 14))
@@ -418,12 +428,13 @@ class AccountingApp:
         )
         self.budget_progress.pack(fill="x", pady=(0, 8))
         self.budget_percent = tk.StringVar(value="0%")
-        ttk.Label(
+        self.budget_percent_label = ttk.Label(
             usage,
             textvariable=self.budget_percent,
             style="Metric.TLabel",
             foreground="#2563eb",
-        ).pack(anchor="w")
+        )
+        self.budget_percent_label.pack(anchor="w")
         self.budget_details = tk.StringVar()
         ttk.Label(
             usage, textvariable=self.budget_details, foreground="#64748b"
@@ -800,29 +811,55 @@ class AccountingApp:
             self.budget_status.set("请检查月份格式（YYYY-MM）。")
             self.budget_percent.set("—")
             self.budget_progress.configure(value=0)
+            self.budget_progress.configure(style="Horizontal.TProgressbar")
             self.budget_details.set("")
             return
         if budget is None:
             self.budget_status.set(f"{month} 尚未设置预算。")
             self.budget_percent.set("—")
             self.budget_progress.configure(value=0)
+            self.budget_progress.configure(style="Horizontal.TProgressbar")
             self.budget_details.set(
                 f"本月收入：{_money(summary.income_cents)}    "
                 f"本月支出：{_money(summary.expense_cents)}"
             )
             return
         net_spending = summary.net_spending_cents
+        self.budget_details.set(
+            f"本月收入：{_money(summary.income_cents)}    "
+            f"本月支出：{_money(summary.expense_cents)}"
+        )
+        if net_spending < 0:
+            net_income = -net_spending
+            self.budget_status.set(
+                f"{month} 净收入：{_money(net_income)} / 预算：{_money(budget)}"
+            )
+            self.budget_progress.configure(
+                value=0, style="Income.Horizontal.TProgressbar"
+            )
+            self.budget_percent.set(f"恭喜本月赚了 {_money(net_income)}！")
+            self.budget_percent_label.configure(foreground="#15966b")
+            return
+
         ratio = net_spending / budget * 100
-        self.budget_progress.configure(value=min(max(ratio, 0), 100))
-        self.budget_percent.set(f"{ratio:.1f}%")
         self.budget_status.set(
             f"{month} 净消费：{_money(net_spending)} / 预算：{_money(budget)}"
         )
+        self.budget_progress.configure(
+            value=min(ratio, 100), style="Expense.Horizontal.TProgressbar"
+        )
+        self.budget_percent.set(f"{ratio:.1f}%")
+        self.budget_percent_label.configure(foreground="#e05b5b")
+        remaining = budget - net_spending
+        remaining_message = (
+            f"已超预算 {_money(-remaining)}"
+            if remaining < 0
+            else f"预算剩余 {_money(remaining)}"
+        )
         self.budget_details.set(
+            f"{remaining_message}    "
             f"本月收入：{_money(summary.income_cents)}    "
-            f"本月支出：{_money(summary.expense_cents)}    "
-            f"净消费 = 支出 - 收入    "
-            f"{'已超预算 ' + _money(net_spending - budget) if ratio > 100 else '预算剩余 ' + _money(budget - net_spending)}"
+            f"本月支出：{_money(summary.expense_cents)}"
         )
 
     def _on_tab_changed(self, _event: tk.Event) -> None:
