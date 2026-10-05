@@ -1,2 +1,2 @@
-matplotlib>=3.7
-
+# Charting dependency; Tkinter and SQLite are provided by Python.
+matplotlib>=3.7,<4.0

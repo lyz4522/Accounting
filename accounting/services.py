@@ -2,6 +2,7 @@
 
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
+import re
 
 from accounting.database import AccountingRepository
 from accounting.models import (
@@ -19,37 +20,75 @@ EXPENSE_CATEGORIES = DEFAULT_EXPENSE_CATEGORIES
 
 
 class AccountingService:
+    MIN_SELECTABLE_YEAR = 1900
+    MAX_SELECTABLE_YEAR = 2100
+    MAX_AMOUNT_CENTS = 999_999_999_999_99
+
     def __init__(self, repository: AccountingRepository) -> None:
         self.repository = repository
 
-    @staticmethod
-    def parse_amount(amount: str) -> int:
+    @classmethod
+    def parse_amount(cls, amount: str) -> int:
+        if not isinstance(amount, str):
+            raise ValueError("金额须为数字文本，例如 12 或 12.50。")
+        normalized = amount.strip()
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]{1,2})?", normalized):
+            raise ValueError("金额须为正数，可带 1 至 2 位小数，例如 12 或 12.50。")
         try:
-            value = Decimal(amount.strip())
+            value = Decimal(normalized)
         except (InvalidOperation, AttributeError) as exc:
             raise ValueError("金额必须是有效数字。") from exc
         if not value.is_finite() or value <= 0:
             raise ValueError("金额必须大于 0。")
-        if value.as_tuple().exponent < -2:
-            raise ValueError("金额最多只能有两位小数。")
-        return int(value * 100)
+        if len(normalized.partition(".")[0]) > 12:
+            raise ValueError("金额整数部分最多 12 位。")
+        amount_cents = int(value * 100)
+        if amount_cents > cls.MAX_AMOUNT_CENTS:
+            raise ValueError("金额过大，超出数据库可保存的最大值。")
+        return amount_cents
 
-    @staticmethod
-    def normalize_date(value: str) -> str:
+    @classmethod
+    def _validate_year(cls, year: int) -> None:
+        if (
+            isinstance(year, bool)
+            or not isinstance(year, int)
+            or not cls.MIN_SELECTABLE_YEAR <= year <= cls.MAX_SELECTABLE_YEAR
+        ):
+            raise ValueError(
+                f"年份须在 {cls.MIN_SELECTABLE_YEAR} 至 {cls.MAX_SELECTABLE_YEAR} 之间。"
+            )
+
+    @classmethod
+    def normalize_date(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("日期格式无效，请使用 YYYY-MM-DD。")
+        normalized_value = value.strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized_value):
+            raise ValueError("日期格式无效，请使用 YYYY-MM-DD。")
         try:
-            return date.fromisoformat(value.strip()).isoformat()
+            normalized = date.fromisoformat(normalized_value)
         except (ValueError, AttributeError) as exc:
             raise ValueError("日期格式无效，请使用 YYYY-MM-DD。") from exc
+        cls._validate_year(normalized.year)
+        return normalized.isoformat()
 
-    @staticmethod
-    def normalize_month(value: str) -> str:
+    @classmethod
+    def normalize_month(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("月份格式无效，请使用 YYYY-MM。")
+        normalized_value = value.strip()
+        if not re.fullmatch(r"\d{4}-\d{2}", normalized_value):
+            raise ValueError("月份格式无效，请使用 YYYY-MM。")
         try:
-            parsed = date.fromisoformat(f"{value.strip()}-01")
+            parsed = date.fromisoformat(f"{normalized_value}-01")
         except (ValueError, AttributeError) as exc:
             raise ValueError("月份格式无效，请使用 YYYY-MM。") from exc
+        cls._validate_year(parsed.year)
         return parsed.strftime("%Y-%m")
 
     def _validate_category(self, transaction_type: TransactionType, category: str) -> str:
+        if not isinstance(category, str):
+            raise ValueError("请选择有效分类。")
         normalized = category.strip()
         if normalized not in self.repository.list_categories(transaction_type):
             raise ValueError("请选择与收支类型匹配的有效分类。")
@@ -66,6 +105,8 @@ class AccountingService:
     ) -> Transaction:
         if not isinstance(transaction_type, TransactionType):
             raise ValueError("收支类型无效。")
+        if not isinstance(note, str):
+            raise ValueError("备注须为文本，最多 100 个字符。")
         normalized_note = note.strip()
         if len(normalized_note) > 100:
             raise ValueError("备注最多只能输入 100 个字符。")
@@ -142,6 +183,8 @@ class AccountingService:
         elif period == "周":
             start = selected - timedelta(days=selected.weekday())
             end = start + timedelta(days=6)
+            start = max(start, date(self.MIN_SELECTABLE_YEAR, 1, 1))
+            end = min(end, date(self.MAX_SELECTABLE_YEAR, 12, 31))
         elif period == "月":
             start = selected.replace(day=1)
             end = selected.replace(day=self._days_in_month(start.strftime("%Y-%m")))
@@ -177,6 +220,8 @@ class AccountingService:
     def add_category(self, transaction_type: TransactionType, name: str) -> str:
         if not isinstance(transaction_type, TransactionType):
             raise ValueError("收支类型无效。")
+        if not isinstance(name, str):
+            raise ValueError("分类名称须为文本。")
         normalized = name.strip()
         if not normalized or len(normalized) > 20:
             raise ValueError("分类名称为必填项，最多只能输入 20 个字符。")
@@ -199,6 +244,5 @@ class AccountingService:
         return self.repository.get_category_totals(self.normalize_month(month))
 
     def monthly_trend(self, year: int) -> list[MonthlyTrend]:
-        if year < 1 or year > 9998:
-            raise ValueError("趋势年份超出有效范围。")
+        self._validate_year(year)
         return self.repository.get_monthly_trend(year)

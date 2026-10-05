@@ -9,9 +9,8 @@ description = "A personal income and expense tracking desktop application."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "matplotlib>=3.7",
+    "matplotlib>=3.7,<4.0",
 ]
 
 [tool.setuptools.packages.find]
 include = ["accounting*"]
-

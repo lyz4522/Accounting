@@ -87,17 +87,51 @@ class AccountingServiceTests(unittest.TestCase):
             self.service.period_bounds("年", sample_date),
             ("2024-01-01", "2024-12-31"),
         )
+        boundary_week = self.service.period_bounds("周", "2100-12-31")
+        self.assertEqual(boundary_week, ("2100-12-27", "2100-12-31"))
+        self.service.summary(*boundary_week)
 
     def test_amount_date_and_category_validation(self) -> None:
-        for amount in ("0", "-1", "1.001", "not-a-number"):
+        for amount in (
+            "0",
+            "-1",
+            "1.001",
+            "not-a-number",
+            "1e2",
+            "1,000",
+            ".25",
+            "1.",
+            "1234567890123",
+            "1000000000000",
+        ):
             with self.subTest(amount=amount), self.assertRaises(ValueError):
                 self.service.save_transaction(
                     "2026-05-01", TransactionType.EXPENSE, "餐饮", amount
                 )
+        self.assertEqual(
+            self.service.parse_amount("999999999999.99"),
+            AccountingService.MAX_AMOUNT_CENTS,
+        )
+        self.assertEqual(self.service.parse_amount("12.5"), 1250)
+        self.service.save_transaction(
+            "2026-05-01",
+            TransactionType.EXPENSE,
+            "餐饮",
+            "1",
+            "备" * 100,
+        )
         with self.assertRaises(ValueError):
             self.service.save_transaction(
                 "2026-02-30", TransactionType.EXPENSE, "餐饮", "1"
             )
+        for invalid_date in ("2026-5-01", "20260501", "1899-12-31", "2101-01-01"):
+            with self.subTest(date=invalid_date), self.assertRaises(ValueError):
+                self.service.normalize_date(invalid_date)
+        for invalid_month in ("2026-1", "202613", "1899-12", "2101-01"):
+            with self.subTest(month=invalid_month), self.assertRaises(ValueError):
+                self.service.normalize_month(invalid_month)
+        self.assertEqual(self.service.normalize_date("1900-01-01"), "1900-01-01")
+        self.assertEqual(self.service.normalize_date("2100-12-31"), "2100-12-31")
         with self.assertRaises(ValueError):
             self.service.save_transaction(
                 "2026-05-01", TransactionType.INCOME, "餐饮", "1"
@@ -147,6 +181,12 @@ class AccountingServiceTests(unittest.TestCase):
         for name in ("", " " * 2, "分类" * 11):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 self.service.add_category(TransactionType.EXPENSE, name)
+        self.assertEqual(
+            self.service.add_category(TransactionType.EXPENSE, "类" * 20),
+            "类" * 20,
+        )
+        with self.assertRaises(ValueError):
+            self.service.add_category(TransactionType.EXPENSE, "类" * 21)
 
     def test_existing_database_is_migrated_without_losing_records(self) -> None:
         database_path = f"{self.temporary_directory.name}/legacy.db"
@@ -218,7 +258,8 @@ class AccountingServiceTests(unittest.TestCase):
         )
         app.budget_progress.configure.reset_mock()
         app.budget_details.set.reset_mock()
-        app.budget_details_label.configure.reset_mock()
+        app.budget_notice.set.reset_mock()
+        app.budget_notice_label.configure.reset_mock()
 
         self.service.save_transaction(
             "2026-07-05", TransactionType.EXPENSE, "交通", "1.00"
@@ -230,12 +271,12 @@ class AccountingServiceTests(unittest.TestCase):
             app.budget_progress.configure.call_args.kwargs["style"],
             "Expense.Horizontal.TProgressbar",
         )
-        self.assertIn(
+        self.assertEqual(
+            app.budget_notice.set.call_args.args[0],
             "预算剩余不多：￥499.00",
-            app.budget_details.set.call_args.args[0],
         )
         self.assertEqual(
-            app.budget_details_label.configure.call_args.kwargs["foreground"],
+            app.budget_notice_label.configure.call_args.kwargs["foreground"],
             "#e05b5b",
         )
 
@@ -244,17 +285,20 @@ class AccountingServiceTests(unittest.TestCase):
         )
         AccountingApp.refresh_budget(app)
         self.assertEqual(app.budget_percent.set.call_args.args[0], "100.0%")
-        self.assertIn(
+        self.assertEqual(
+            app.budget_notice.set.call_args.args[0],
             "预算剩余不多：￥0.00",
-            app.budget_details.set.call_args.args[0],
         )
         self.service.save_transaction(
             "2026-07-07", TransactionType.EXPENSE, "交通", "0.01"
         )
         AccountingApp.refresh_budget(app)
-        self.assertIn("已超预算 ￥0.01", app.budget_details.set.call_args.args[0])
         self.assertEqual(
-            app.budget_details_label.configure.call_args.kwargs["foreground"],
+            app.budget_notice.set.call_args.args[0],
+            "已超预算 ￥0.01",
+        )
+        self.assertEqual(
+            app.budget_notice_label.configure.call_args.kwargs["foreground"],
             "#e05b5b",
         )
 
@@ -265,8 +309,9 @@ class AccountingServiceTests(unittest.TestCase):
             budget_status=Mock(),
             budget_percent=Mock(),
             budget_progress=Mock(),
+            budget_notice=Mock(),
+            budget_notice_label=Mock(),
             budget_details=Mock(),
-            budget_details_label=Mock(),
             budget_percent_label=Mock(),
         )
 

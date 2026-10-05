@@ -1,7 +1,8 @@
 """Tkinter user interface for records, analysis, and budget reminders."""
 
-from datetime import date
 import calendar
+import re
+from datetime import date
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -25,6 +26,31 @@ def _amount_text(amount_cents: int) -> str:
     sign = "-" if amount_cents < 0 else ""
     whole, fraction = divmod(abs(amount_cents), 100)
     return f"{sign}{whole}.{fraction:02d}"
+
+
+def _validated_entry(
+    master: tk.Misc,
+    variable: tk.StringVar,
+    *,
+    max_length: int,
+    amount: bool = False,
+    width: int,
+) -> ttk.Entry:
+    def accepts(value: str) -> bool:
+        if len(value) > max_length:
+            return False
+        if amount:
+            return bool(re.fullmatch(r"[0-9]{0,12}(?:\.[0-9]{0,2})?", value))
+        return "\n" not in value and "\r" not in value
+
+    validator = master.register(accepts)
+    return ttk.Entry(
+        master,
+        textvariable=variable,
+        width=width,
+        validate="key",
+        validatecommand=(validator, "%P"),
+    )
 
 
 class DateSelector(ttk.Frame):
@@ -133,8 +159,8 @@ class AccountingApp:
 
     def _configure_window(self) -> None:
         self.root.title("个人消费记账")
-        self.root.geometry("1180x780")
-        self.root.minsize(920, 650)
+        self.root.geometry("1180x820")
+        self.root.minsize(1080, 760)
         self.root.configure(bg="#f4f6f8")
         rcParams["font.sans-serif"] = ["Microsoft YaHei", "DejaVu Sans"]
         rcParams["axes.unicode_minus"] = False
@@ -199,20 +225,27 @@ class AccountingApp:
             form, textvariable=self.record_category, state="readonly", width=12
         )
         self.record_category_box.grid(row=1, column=2, sticky="w", padx=(0, 10))
-        ttk.Label(
-            form, text="金额（元，必填；如 12.50，>0，最多 2 位小数）"
-        ).grid(
+        ttk.Label(form, text="金额（元，必填）").grid(
             row=0, column=3, sticky="w"
         )
-        ttk.Entry(form, textvariable=self.record_amount, width=18).grid(
-            row=1, column=3, sticky="w", padx=(0, 10)
+        _validated_entry(
+            form, self.record_amount, max_length=15, amount=True, width=17
+        ).grid(
+            row=1, column=3, sticky="ew", padx=(0, 10)
         )
-        ttk.Label(form, text="备注（选填，最多 100 个字符）").grid(
+        ttk.Label(form, text="备注（选填）").grid(
             row=0, column=4, sticky="w"
         )
-        ttk.Entry(form, textvariable=self.record_note, width=25).grid(
+        _validated_entry(
+            form, self.record_note, max_length=100, width=25
+        ).grid(
             row=1, column=4, sticky="ew", padx=(0, 10)
         )
+        ttk.Label(
+            form,
+            text="金额：0 < 金额 ≤ 999,999,999,999.99；最多 12 位整数、2 位小数。备注：最多 100 字符。",
+            foreground="#64748b",
+        ).grid(row=2, column=0, columnspan=5, sticky="w", pady=(6, 0))
         form.columnconfigure(4, weight=1)
         self.record_type.trace_add("write", self._update_category_choices)
         self._update_category_choices()
@@ -235,25 +268,29 @@ class AccountingApp:
         filters.pack(fill="x", pady=(0, 10))
         self.filter_start_enabled = tk.BooleanVar(value=False)
         self.filter_end_enabled = tk.BooleanVar(value=False)
+        date_filters = ttk.Frame(filters)
+        date_filters.grid(row=0, column=0, columnspan=6, sticky="w")
         ttk.Checkbutton(
-            filters,
-            text="开始日期",
+            date_filters,
+            text="启用开始日期",
             variable=self.filter_start_enabled,
             command=self._update_filter_date_states,
-        ).pack(side="left")
-        self.filter_start = DateSelector(filters)
-        self.filter_start.pack(side="left", padx=(4, 0))
+        ).grid(row=0, column=0, sticky="w")
+        self.filter_start = DateSelector(date_filters)
+        self.filter_start.grid(row=0, column=1, sticky="w", padx=(5, 18))
         ttk.Checkbutton(
-            filters,
-            text="结束日期",
+            date_filters,
+            text="启用结束日期",
             variable=self.filter_end_enabled,
             command=self._update_filter_date_states,
-        ).pack(side="left", padx=(10, 0))
-        self.filter_end = DateSelector(filters)
-        self.filter_end.pack(side="left", padx=(4, 0))
+        ).grid(row=0, column=2, sticky="w")
+        self.filter_end = DateSelector(date_filters)
+        self.filter_end.grid(row=0, column=3, sticky="w", padx=(5, 0))
         self.filter_type = tk.StringVar(value="全部")
         self.filter_category = tk.StringVar(value="全部")
-        ttk.Label(filters, text="收支类型").pack(side="left", padx=(12, 0))
+        ttk.Label(filters, text="收支类型").grid(
+            row=1, column=0, sticky="w", pady=(8, 0)
+        )
         self.filter_type_box = ttk.Combobox(
             filters,
             textvariable=self.filter_type,
@@ -261,9 +298,9 @@ class AccountingApp:
             state="readonly",
             width=8,
         )
-        self.filter_type_box.pack(side="left", padx=(5, 4))
+        self.filter_type_box.grid(row=1, column=1, sticky="w", padx=(5, 16), pady=(8, 0))
         self.filter_type.trace_add("write", self._update_filter_categories)
-        ttk.Label(filters, text="分类").pack(side="left")
+        ttk.Label(filters, text="分类").grid(row=1, column=2, sticky="w", pady=(8, 0))
         self.filter_category_box = ttk.Combobox(
             filters,
             textvariable=self.filter_category,
@@ -271,13 +308,20 @@ class AccountingApp:
             state="disabled",
             width=12,
         )
-        self.filter_category_box.pack(side="left", padx=(5, 8))
-        ttk.Button(filters, text="应用筛选", command=self.refresh_records).pack(
-            side="left"
+        self.filter_category_box.grid(
+            row=1, column=3, sticky="w", padx=(5, 12), pady=(8, 0)
         )
-        ttk.Button(filters, text="重置", command=self.reset_filters).pack(
-            side="left"
+        ttk.Button(filters, text="应用筛选", command=self.refresh_records).grid(
+            row=1, column=4, sticky="w", pady=(8, 0)
         )
+        ttk.Button(filters, text="重置", command=self.reset_filters).grid(
+            row=1, column=5, sticky="w", padx=(6, 0), pady=(8, 0)
+        )
+        ttk.Label(
+            filters,
+            text="日期范围：勾选后生效；分类筛选需先选择收支类型。",
+            foreground="#64748b",
+        ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(6, 0))
         self._update_filter_date_states()
 
         table_frame = ttk.Frame(self.records_tab)
@@ -322,22 +366,27 @@ class AccountingApp:
         )
         summary_box.pack(fill="x", pady=(0, 12))
         self.summary_period = tk.StringVar(value="月")
-        ttk.Label(summary_box, text="统计周期").grid(row=0, column=0, sticky="w")
+        controls = ttk.Frame(summary_box)
+        controls.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
+        ttk.Label(controls, text="统计周期").grid(row=0, column=0, sticky="w")
         ttk.Combobox(
-            summary_box,
+            controls,
             textvariable=self.summary_period,
             values=["日", "周", "月", "年"],
             state="readonly",
             width=8,
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0), padx=(0, 12))
-        ttk.Label(summary_box, text="日期（周/月/年按此日期所在周期统计）").grid(
-            row=0, column=1, sticky="w"
-        )
-        self.summary_date = DateSelector(summary_box)
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0), padx=(0, 16))
+        ttk.Label(controls, text="统计日期").grid(row=0, column=1, sticky="w")
+        self.summary_date = DateSelector(controls)
         self.summary_date.grid(row=1, column=1, sticky="w", pady=(4, 0))
+        ttk.Label(
+            controls,
+            text="日按所选日统计；周、月、年按所选日期所在周期统计。",
+            foreground="#64748b",
+        ).grid(row=1, column=2, sticky="w", padx=(12, 0))
         ttk.Button(
-            summary_box, text="查询汇总", command=self.refresh_summary
-        ).grid(row=1, column=2, padx=12, sticky="w")
+            controls, text="查询汇总", command=self.refresh_summary
+        ).grid(row=1, column=3, padx=(12, 0), sticky="w")
         self.summary_income = tk.StringVar(value="￥0.00")
         self.summary_expense = tk.StringVar(value="￥0.00")
         self.summary_balance = tk.StringVar(value="￥0.00")
@@ -350,11 +399,13 @@ class AccountingApp:
             start=3,
         ):
             card = ttk.Frame(summary_box, padding=(12, 0))
-            card.grid(row=0, column=column, rowspan=2, sticky="nsew")
+            card.grid(row=1, column=column - 3, sticky="nsew", padx=8, pady=4)
             ttk.Label(card, text=label, foreground="#64748b").pack(anchor="w")
             ttk.Label(card, textvariable=variable, style="Metric.TLabel", foreground=color).pack(
                 anchor="w", pady=(4, 0)
             )
+            summary_box.columnconfigure(column - 3, weight=1)
+        for column in range(3):
             summary_box.columnconfigure(column, weight=1)
         charts_box = ttk.LabelFrame(
             self.statistics_tab, text="月度分类占比与收支趋势", padding=6
@@ -377,7 +428,7 @@ class AccountingApp:
         ttk.Button(controls, text="更新图表", command=self.refresh_charts).pack(
             side="left"
         )
-        self.figure = Figure(figsize=(11, 4.7), dpi=100, tight_layout=True)
+        self.figure = Figure(figsize=(10, 4.2), dpi=100, tight_layout=True)
         self.expense_axis, self.income_axis, self.trend_axis = self.figure.subplots(
             1, 3
         )
@@ -407,16 +458,22 @@ class AccountingApp:
         ttk.Button(settings, text="加载月份", command=self.load_budget).grid(
             row=1, column=1, padx=(8, 24), pady=(5, 0)
         )
-        ttk.Label(
-            settings,
-            text="生活费预算（元，必填；如 2000.00，>0，最多 2 位小数）",
-        ).grid(row=0, column=2, sticky="w")
-        ttk.Entry(settings, textvariable=self.budget_amount, width=18).grid(
+        ttk.Label(settings, text="生活费预算（元，必填）").grid(
+            row=0, column=2, sticky="w"
+        )
+        _validated_entry(
+            settings, self.budget_amount, max_length=15, amount=True, width=18
+        ).grid(
             row=1, column=2, sticky="w", pady=(5, 0)
         )
         ttk.Button(settings, text="保存预算", command=self.save_budget).grid(
             row=1, column=3, padx=(8, 0), pady=(5, 0)
         )
+        ttk.Label(
+            settings,
+            text="格式：最多 12 位整数和 2 位小数；范围 0 < 预算 ≤ 999,999,999,999.99。",
+            foreground="#64748b",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
         usage = ttk.LabelFrame(self.budget_tab, text="本月预算使用情况", padding=20)
         usage.pack(fill="x", pady=(20, 0))
         self.budget_status = tk.StringVar(value="请设置或加载月度预算。")
@@ -435,11 +492,18 @@ class AccountingApp:
             foreground="#2563eb",
         )
         self.budget_percent_label.pack(anchor="w")
-        self.budget_details = tk.StringVar()
-        self.budget_details_label = ttk.Label(
-            usage, textvariable=self.budget_details, foreground="#64748b"
+        self.budget_notice = tk.StringVar()
+        self.budget_notice_label = ttk.Label(
+            usage,
+            textvariable=self.budget_notice,
+            foreground="#64748b",
+            style="Section.TLabel",
         )
-        self.budget_details_label.pack(anchor="w", pady=(10, 0))
+        self.budget_notice_label.pack(anchor="w", pady=(4, 0))
+        self.budget_details = tk.StringVar()
+        ttk.Label(
+            usage, textvariable=self.budget_details, foreground="#64748b"
+        ).pack(anchor="w", pady=(10, 0))
 
     def _update_category_choices(self, *_: object) -> None:
         transaction_type = TransactionType(self.record_type.get())
@@ -491,7 +555,9 @@ class AccountingApp:
             window,
             text="分类名称（必填，1–20 个字符，同类型下不可重名）",
         ).grid(row=2, column=0, sticky="w", padx=12, pady=(12, 4))
-        ttk.Entry(window, textvariable=category_name, width=32).grid(
+        _validated_entry(
+            window, category_name, max_length=20, width=32
+        ).grid(
             row=3, column=0, sticky="ew", padx=12
         )
         ttk.Label(
@@ -811,21 +877,21 @@ class AccountingApp:
         except ValueError:
             self.budget_status.set("请检查月份格式（YYYY-MM）。")
             self.budget_percent.set("—")
+            self.budget_notice.set("")
             self.budget_progress.pack(fill="x", pady=(0, 8))
             self.budget_progress.configure(value=0)
             self.budget_progress.configure(style="Horizontal.TProgressbar")
             self.budget_percent_label.configure(foreground="#2563eb")
-            self.budget_details_label.configure(foreground="#64748b")
             self.budget_details.set("")
             return
         if budget is None:
             self.budget_status.set(f"{month} 尚未设置预算。")
             self.budget_percent.set("—")
+            self.budget_notice.set("")
             self.budget_progress.pack(fill="x", pady=(0, 8))
             self.budget_progress.configure(value=0)
             self.budget_progress.configure(style="Horizontal.TProgressbar")
             self.budget_percent_label.configure(foreground="#2563eb")
-            self.budget_details_label.configure(foreground="#64748b")
             self.budget_details.set(
                 f"本月收入：{_money(summary.income_cents)}    "
                 f"本月支出：{_money(summary.expense_cents)}"
@@ -844,7 +910,7 @@ class AccountingApp:
             self.budget_progress.pack_forget()
             self.budget_percent.set(f"恭喜本月赚了 {_money(net_income)}！")
             self.budget_percent_label.configure(foreground="#15966b")
-            self.budget_details_label.configure(foreground="#64748b")
+            self.budget_notice.set("")
             return
 
         ratio = net_spending / budget * 100
@@ -866,16 +932,17 @@ class AccountingApp:
         )
         remaining = budget - net_spending
         if remaining < 0:
-            remaining_message = f"已超预算 {_money(-remaining)}"
-            self.budget_details_label.configure(foreground="#e05b5b")
+            notice = f"已超预算 {_money(-remaining)}"
+            notice_color = "#e05b5b"
         elif over_half_budget:
-            remaining_message = f"预算剩余不多：{_money(remaining)}"
-            self.budget_details_label.configure(foreground="#e05b5b")
+            notice = f"预算剩余不多：{_money(remaining)}"
+            notice_color = "#e05b5b"
         else:
-            remaining_message = f"预算剩余：{_money(remaining)}"
-            self.budget_details_label.configure(foreground="#64748b")
+            notice = f"预算剩余：{_money(remaining)}"
+            notice_color = "#64748b"
+        self.budget_notice.set(notice)
+        self.budget_notice_label.configure(foreground=notice_color)
         self.budget_details.set(
-            f"{remaining_message}    "
             f"本月收入：{_money(summary.income_cents)}    "
             f"本月支出：{_money(summary.expense_cents)}"
         )
