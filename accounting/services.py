@@ -1,0 +1,184 @@
+"""Validation and accounting rules, independent of the graphical interface."""
+
+from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
+
+from accounting.database import AccountingRepository
+from accounting.models import (
+    CategoryTotal,
+    MonthlyTrend,
+    PeriodSummary,
+    Transaction,
+    TransactionType,
+)
+
+INCOME_CATEGORIES = ("工资", "奖金", "理财", "兼职", "其他收入")
+EXPENSE_CATEGORIES = (
+    "餐饮",
+    "交通",
+    "住房",
+    "购物",
+    "医疗",
+    "娱乐",
+    "教育",
+    "通讯",
+    "其他支出",
+)
+
+
+class AccountingService:
+    def __init__(self, repository: AccountingRepository) -> None:
+        self.repository = repository
+
+    @staticmethod
+    def parse_amount(amount: str) -> int:
+        try:
+            value = Decimal(amount.strip())
+        except (InvalidOperation, AttributeError) as exc:
+            raise ValueError("金额必须是有效数字。") from exc
+        if not value.is_finite() or value <= 0:
+            raise ValueError("金额必须大于 0。")
+        if value.as_tuple().exponent < -2:
+            raise ValueError("金额最多只能有两位小数。")
+        return int(value * 100)
+
+    @staticmethod
+    def normalize_date(value: str) -> str:
+        try:
+            return date.fromisoformat(value.strip()).isoformat()
+        except (ValueError, AttributeError) as exc:
+            raise ValueError("日期格式无效，请使用 YYYY-MM-DD。") from exc
+
+    @staticmethod
+    def normalize_month(value: str) -> str:
+        try:
+            parsed = date.fromisoformat(f"{value.strip()}-01")
+        except (ValueError, AttributeError) as exc:
+            raise ValueError("月份格式无效，请使用 YYYY-MM。") from exc
+        return parsed.strftime("%Y-%m")
+
+    @staticmethod
+    def _validate_category(transaction_type: TransactionType, category: str) -> str:
+        categories = (
+            INCOME_CATEGORIES
+            if transaction_type is TransactionType.INCOME
+            else EXPENSE_CATEGORIES
+        )
+        normalized = category.strip()
+        if normalized not in categories:
+            raise ValueError("请选择与收支类型匹配的有效分类。")
+        return normalized
+
+    def save_transaction(
+        self,
+        transaction_date: str,
+        transaction_type: TransactionType,
+        category: str,
+        amount: str,
+        note: str = "",
+        transaction_id: int | None = None,
+    ) -> Transaction:
+        if not isinstance(transaction_type, TransactionType):
+            raise ValueError("收支类型无效。")
+        transaction = Transaction(
+            transaction_id=transaction_id,
+            date=self.normalize_date(transaction_date),
+            transaction_type=transaction_type,
+            category=self._validate_category(transaction_type, category),
+            amount_cents=self.parse_amount(amount),
+            note=note.strip(),
+        )
+        if transaction_id is None:
+            return self.repository.add_transaction(transaction)
+        if not self.repository.update_transaction(transaction):
+            raise ValueError("这条记录已不存在，请刷新记录列表后重试。")
+        return transaction
+
+    def delete_transaction(self, transaction_id: int) -> None:
+        if not self.repository.delete_transaction(transaction_id):
+            raise ValueError("这条记录已不存在，请刷新记录列表后重试。")
+
+    def summary(self, start_date: str, end_date: str) -> PeriodSummary:
+        start = self.normalize_date(start_date)
+        end = self.normalize_date(end_date)
+        if start > end:
+            raise ValueError("开始日期不能晚于结束日期。")
+        transactions = self.repository.list_transactions(start, end)
+        income = sum(
+            item.amount_cents
+            for item in transactions
+            if item.transaction_type is TransactionType.INCOME
+        )
+        expense = sum(
+            item.amount_cents
+            for item in transactions
+            if item.transaction_type is TransactionType.EXPENSE
+        )
+        return PeriodSummary(income, expense)
+
+    def monthly_summary(self, month: str) -> PeriodSummary:
+        normalized_month = self.normalize_month(month)
+        return self.summary(
+            f"{normalized_month}-01",
+            f"{normalized_month}-{self._days_in_month(normalized_month)}",
+        )
+
+    @staticmethod
+    def _days_in_month(month: str) -> int:
+        first = date.fromisoformat(f"{month}-01")
+        next_month = (
+            date(first.year + 1, 1, 1)
+            if first.month == 12
+            else date(first.year, first.month + 1, 1)
+        )
+        return (next_month - timedelta(days=1)).day
+
+    def budget_usage(self, month: str) -> tuple[int | None, PeriodSummary]:
+        normalized_month = self.normalize_month(month)
+        return (
+            self.repository.get_budget(normalized_month),
+            self.monthly_summary(normalized_month),
+        )
+
+    def set_budget(self, month: str, amount: str) -> int:
+        normalized_month = self.normalize_month(month)
+        amount_cents = self.parse_amount(amount)
+        self.repository.set_budget(normalized_month, amount_cents)
+        return amount_cents
+
+    def period_bounds(self, period: str, selected_date: str) -> tuple[str, str]:
+        selected = date.fromisoformat(self.normalize_date(selected_date))
+        if period == "日":
+            start = end = selected
+        elif period == "周":
+            start = selected - timedelta(days=selected.weekday())
+            end = start + timedelta(days=6)
+        elif period == "月":
+            start = selected.replace(day=1)
+            end = selected.replace(day=self._days_in_month(start.strftime("%Y-%m")))
+        elif period == "年":
+            start = date(selected.year, 1, 1)
+            end = date(selected.year, 12, 31)
+        else:
+            raise ValueError("统计周期无效。")
+        return start.isoformat(), end.isoformat()
+
+    def list_transactions(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        category: str | None = None,
+    ) -> list[Transaction]:
+        start = self.normalize_date(start_date) if start_date else None
+        end = self.normalize_date(end_date) if end_date else None
+        if start and end and start > end:
+            raise ValueError("开始日期不能晚于结束日期。")
+        return self.repository.list_transactions(start, end, category)
+
+    def category_totals(self, month: str) -> list[CategoryTotal]:
+        return self.repository.get_category_totals(self.normalize_month(month))
+
+    def monthly_trend(self, year: int) -> list[MonthlyTrend]:
+        if year < 1 or year > 9998:
+            raise ValueError("趋势年份超出有效范围。")
+        return self.repository.get_monthly_trend(year)

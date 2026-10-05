@@ -1,0 +1,2 @@
+"""Personal accounting application."""
+
